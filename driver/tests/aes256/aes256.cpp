@@ -104,7 +104,7 @@ static int openssl_aes256(int enc, int ctr, const char *iv, const char *input,
     return 1;
   }
 
-  if (outl_update + outl_final != buf_size) {
+  if (outl_update + outl_final != (int)buf_size) {
     std::cerr << "Wrong amount of data " << (enc? "encrypted" : "decrypted")
               << " by openssl: " << outl_update << " + " << outl_final
               << " != " << buf_size << std::endl;

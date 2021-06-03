@@ -1,25 +1,29 @@
 #include <stdint.h>
-#include <string.h>
 #include <vx_intrinsics.h>
 #include "aes256.h"
+#include "tables.h"
 
 static void aes256_cipher(const uint8_t *, const uint8_t *, const uint8_t *,
                           uint8_t *, const uint32_t *);
 static void aes256_inv_cipher(const uint8_t *, const uint8_t *, uint8_t *,
                               const uint32_t *);
-static uint32_t sub_word(uint32_t);
-static uint32_t rot_word(uint32_t);
 static void increment_128bit(uint32_t *, uint32_t);
 static void add_round_key(uint8_t *, const uint32_t *);
+static inline uint32_t sub_word(uint32_t);
+static inline uint32_t rot_word(uint32_t);
+static inline void copy_state(uint8_t *, const uint8_t *);
 #ifndef AES_NATIVE
+#ifndef AES_TABLE
+static void mix_columns(uint8_t *);
+#endif
 static void inv_sub_bytes(uint8_t *);
 static void inv_shift_rows(uint8_t *);
 static void inv_mix_columns(uint8_t *);
 static void sub_bytes(uint8_t *);
 static void shift_rows(uint8_t *);
-static void mix_columns(uint8_t *);
-static uint8_t s_box_replace(uint8_t);
-static uint8_t inv_s_box_replace(uint8_t);
+static inline uint8_t xtime(uint8_t);
+static inline uint8_t s_box_replace(uint8_t);
+static inline uint8_t inv_s_box_replace(uint8_t);
 #endif
 
 void aes256_ecb_enc(const uint8_t *in, const uint32_t *round_keys, uint8_t *out, int nblocks) {
@@ -56,7 +60,7 @@ void aes256_ctr(const uint8_t *init_ctr, uint32_t start_block_idx,
                 const uint8_t *in, const uint32_t *round_keys, uint8_t *out,
                 int nblocks) {
     uint8_t ctr[4 * Nb];
-    memcpy(ctr, init_ctr, sizeof ctr);
+    copy_state(ctr, init_ctr);
     increment_128bit((uint32_t *)ctr, start_block_idx);
     for (int b = 0; b < nblocks; b++) {
         aes256_cipher(NO_XOR, in + (Nb * 4 * b), ctr, out + (Nb * 4 * b), round_keys);
@@ -144,7 +148,7 @@ static void aes256_cipher(const uint8_t *xor_before, const uint8_t *xor_after,
                           const uint32_t *round_keys) {
     uint8_t state[4 * Nb];
 
-    memcpy(state, in, 4 * Nb);
+    copy_state(state, in);
 
     // For CBC
     if (xor_before != NO_XOR) {
@@ -155,30 +159,64 @@ static void aes256_cipher(const uint8_t *xor_before, const uint8_t *xor_after,
 
     add_round_key(state, round_keys);
 
+#ifdef AES_TABLE
+    for (int round = 1; round < Nr; round++) {
+        uint8_t new_state[4 * Nb];
+        for (int j = 0; j < Nb; j++) {
+            const uint8_t *t0, *t1, *t2, *t3;
+            t0 = T0_fwd[state[4*j]];
+# ifdef AES_MONOTABLE
+            t1 = T0_fwd[state[4*((j + 1) % Nb) + 1]];
+            t2 = T0_fwd[state[4*((j + 2) % Nb) + 2]];
+            t3 = T0_fwd[state[4*((j + 3) % Nb) + 3]];
+# else
+            t1 = T1_fwd[state[4*((j + 1) % Nb) + 1]];
+            t2 = T2_fwd[state[4*((j + 2) % Nb) + 2]];
+            t3 = T3_fwd[state[4*((j + 3) % Nb) + 3]];
+# endif
+
+            for (int k = 0; k < 4; k++) {
+# ifdef AES_MONOTABLE
+                new_state[4*j + k] = t0[k] ^ t1[(k + 3) % 4] ^ t2[(k + 2) % 4] ^ t3[(k + 1) % 4];
+# else
+                new_state[4*j + k] = t0[k] ^ t1[k] ^ t2[k] ^ t3[k];
+# endif
+            }
+        }
+
+        add_round_key(new_state, round_keys + (Nb * round));
+        copy_state(state, new_state);
+    }
+
+    sub_bytes(state);
+    shift_rows(state);
+    add_round_key(state, round_keys + (Nb * Nr));
+#else
     for (int round = 1; round <= Nr; round++) {
         const uint32_t *this_round_keys = round_keys + (Nb * round);
-        #ifdef AES_NATIVE
+# ifdef AES_NATIVE
         if (round < Nr) {
             __intrin_aes_enc_round((uint32_t *)state, (uint32_t *)state, this_round_keys);
         } else {
             __intrin_aes_last_enc_round((uint32_t *)state, (uint32_t *)state, this_round_keys);
         }
-        #else
+# else
         sub_bytes(state);
         shift_rows(state);
         if (round < Nr) {
             mix_columns(state);
         }
         add_round_key(state, this_round_keys);
-        #endif
+# endif
     }
+#endif
 
     // For CTR
     if (xor_after != NO_XOR) {
         add_round_key(state, (uint32_t *)xor_after);
     }
 
-    memcpy(out, state, 4 * Nb);
+    copy_state(out, state);
 }
 
 // Equivalent inverse cipher from Section 5.3.5 of AES spec
@@ -186,27 +224,61 @@ static void aes256_inv_cipher(const uint8_t *xor_after, const uint8_t *in,
                               uint8_t *out, const uint32_t *round_keys) {
     uint8_t state[4 * Nb];
 
-    memcpy(state, in, 4 * Nb);
+    copy_state(state, in);
 
     add_round_key(state, round_keys + (Nb * Nr));
 
+#ifdef AES_TABLE
+    for (int round = Nr - 1; round > 0; round--) {
+        uint8_t new_state[4 * Nb];
+        for (int j = 0; j < Nb; j++) {
+            const uint8_t *t0, *t1, *t2, *t3;
+            t0 = T0_inv[state[4*j]];
+# ifdef AES_MONOTABLE
+            t1 = T0_inv[state[4*((j + 3) % Nb) + 1]];
+            t2 = T0_inv[state[4*((j + 2) % Nb) + 2]];
+            t3 = T0_inv[state[4*((j + 1) % Nb) + 3]];
+# else
+            t1 = T1_inv[state[4*((j + 3) % Nb) + 1]];
+            t2 = T2_inv[state[4*((j + 2) % Nb) + 2]];
+            t3 = T3_inv[state[4*((j + 1) % Nb) + 3]];
+# endif
+
+            for (int k = 0; k < 4; k++) {
+# ifdef AES_MONOTABLE
+                new_state[4*j + k] = t0[k] ^ t1[(k + 3) % 4] ^ t2[(k + 2) % 4] ^ t3[(k + 1) % 4];
+# else
+                new_state[4*j + k] = t0[k] ^ t1[k] ^ t2[k] ^ t3[k];
+# endif
+            }
+        }
+
+        add_round_key(new_state, round_keys + (Nb * round));
+        copy_state(state, new_state);
+    }
+
+    inv_sub_bytes(state);
+    inv_shift_rows(state);
+    add_round_key(state, round_keys);
+#else
     for (int round = Nr - 1; round >= 0; round--) {
         const uint32_t *this_round_keys = round_keys + (Nb * round);
-        #ifdef AES_NATIVE
+# ifdef AES_NATIVE
         if (round > 0) {
             __intrin_aes_dec_round((uint32_t *)state, (uint32_t *)state, this_round_keys);
         } else {
             __intrin_aes_last_dec_round((uint32_t *)state, (uint32_t *)state, this_round_keys);
         }
-        #else
+# else
         inv_sub_bytes(state);
         inv_shift_rows(state);
         if (round > 0) {
             inv_mix_columns(state);
         }
         add_round_key(state, this_round_keys);
-        #endif
+# endif
     }
+#endif
 
     // For CBC
     if (xor_after != NO_XOR) {
@@ -215,10 +287,10 @@ static void aes256_inv_cipher(const uint8_t *xor_after, const uint8_t *in,
         add_round_key(state, (uint32_t *)xor_after);
     }
 
-    memcpy(out, state, 4 * Nb);
+    copy_state(out, state);
 }
 
-static uint32_t sub_word(uint32_t word) {
+static inline uint32_t sub_word(uint32_t word) {
 #ifdef AES_NATIVE
     return __intrin_aes_subword(word);
 #else
@@ -259,7 +331,33 @@ static void add_round_key(uint8_t *state, const uint32_t *round_keys) {
     }
 }
 
+static inline void copy_state(uint8_t *dest, const uint8_t *src) {
+    for (int i = 0; i < 4; i++) {
+        ((uint32_t *)dest)[i] = ((uint32_t *)src)[i];
+    }
+}
+
 #ifndef AES_NATIVE
+#ifndef AES_TABLE
+static void mix_columns(uint8_t *state) {
+    uint32_t *state_cols = (uint32_t *)state;
+
+    for (int i = 0; i < Nb; i++) {
+        uint8_t *col = (uint8_t *)(state_cols + i);
+        uint32_t new = 0;
+        uint8_t *new_col = (uint8_t *)&new;
+
+        // important observation: {03}.b = ({01} ^ {02}).b = b ^ {02}.b
+        new_col[0] = xtime(col[0]) ^ col[1] ^ xtime(col[1]) ^ col[2] ^ col[3];
+        new_col[1] = col[0] ^ xtime(col[1]) ^ col[2] ^ xtime(col[2]) ^ col[3];
+        new_col[2] = col[0] ^ col[1] ^ xtime(col[2]) ^ col[3] ^ xtime(col[3]);
+        new_col[3] = col[0] ^ xtime(col[0]) ^ col[1] ^ col[2] ^ xtime(col[3]);
+
+        state_cols[i] = new;
+    }
+}
+#endif
+
 static void sub_bytes(uint8_t *state) {
     for (int i = 0; i < 4 * Nb; i++) {
         state[i] = s_box_replace(state[i]);
@@ -278,7 +376,7 @@ static void shift_rows(uint8_t *state) {
     new[1] = state[5]; new[5] = state[9]; new[9] = state[13]; new[13] = state[1];
     new[2] = state[10]; new[6] = state[14]; new[10] = state[2]; new[14] = state[6];
     new[3] = state[15]; new[7] = state[3]; new[11] = state[7]; new[15] = state[11];
-    memcpy(state, new, sizeof new);
+    copy_state(state, new);
 }
 
 static void inv_shift_rows(uint8_t *state) {
@@ -287,33 +385,7 @@ static void inv_shift_rows(uint8_t *state) {
     new[1] = state[13]; new[5] = state[1]; new[9] = state[5]; new[13] = state[9];
     new[2] = state[10]; new[6] = state[14]; new[10] = state[2]; new[14] = state[6];
     new[3] = state[7]; new[7] = state[11]; new[11] = state[15]; new[15] = state[3];
-    memcpy(state, new, sizeof new);
-}
-
-static inline uint8_t xtime(uint8_t byte) {
-    // Hack because the following line does not work when using multiple
-    // threads, strangely enough:
-    //     return ((byte << 1) & 0xff) ^ ((0x80 & byte)? 0x1b : 0);
-    static const uint8_t xor_with[] = {0x00, 0x1b};
-    return ((byte << 1) & 0xff) ^ xor_with[byte >> 7];
-}
-
-static void mix_columns(uint8_t *state) {
-    uint32_t *state_cols = (uint32_t *)state;
-
-    for (int i = 0; i < Nb; i++) {
-        uint8_t *col = (uint8_t *)(state_cols + i);
-        uint32_t new = 0;
-        uint8_t *new_col = (uint8_t *)&new;
-
-        // important observation: {03}.b = ({01} ^ {02}).b = b ^ {02}.b
-        new_col[0] = xtime(col[0]) ^ col[1] ^ xtime(col[1]) ^ col[2] ^ col[3];
-        new_col[1] = col[0] ^ xtime(col[1]) ^ col[2] ^ xtime(col[2]) ^ col[3];
-        new_col[2] = col[0] ^ col[1] ^ xtime(col[2]) ^ col[3] ^ xtime(col[3]);
-        new_col[3] = col[0] ^ xtime(col[0]) ^ col[1] ^ col[2] ^ xtime(col[3]);
-
-        state_cols[i] = new;
-    }
+    copy_state(state, new);
 }
 
 static void inv_mix_columns(uint8_t *state) {
@@ -372,6 +444,14 @@ static void inv_mix_columns(uint8_t *state) {
 
         state_cols[i] = new;
     }
+}
+
+static inline uint8_t xtime(uint8_t byte) {
+    // Hack because the following line does not work when using multiple
+    // threads, strangely enough:
+    //     return ((byte << 1) & 0xff) ^ ((0x80 & byte)? 0x1b : 0);
+    static const uint8_t xor_with[] = {0x00, 0x1b};
+    return ((byte << 1) & 0xff) ^ xor_with[byte >> 7];
 }
 
 static inline uint8_t s_box_replace(uint8_t byte) {

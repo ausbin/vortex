@@ -23,7 +23,7 @@ VX_CFLAGS += -B$(RISCV_TOOLCHAIN_PATH)/riscv32-unknown-elf/bin -I$(VORTEX_RT_PAT
 
 VX_LDFLAGS += -Wl,-Bstatic,-T,$(VORTEX_RT_PATH)/linker/vx_link.ld -Wl,--gc-sections $(VORTEX_RT_PATH)/libvortexrt.a
 
-VX_SRCS = kernel.c aes256-impl.c
+VX_SRCS = kernel.c aes256-impl.c tables.c
 
 #CXXFLAGS += -std=c++11 -O2 -Wall -Wextra -pedantic -Wfatal-errors
 CXXFLAGS += -std=c++11 -O0 -g -Wall -Wextra -pedantic -Wfatal-errors
