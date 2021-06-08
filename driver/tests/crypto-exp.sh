@@ -11,7 +11,7 @@ sha256_op_types='hash'
 for algo in sha256 aes256; do
     pushd "$algo"
 
-    for accel_mode in NATIVE HYBRID NATIVE,HYBRID SOFTWARE; do
+    for accel_mode in NATIVE HYBRID NATIVE,HYBRID TABLE,MONOTABLE TABLE SOFTWARE; do
         make clean-all
         CRYPTO_ACCEL_MODE=$accel_mode make
 

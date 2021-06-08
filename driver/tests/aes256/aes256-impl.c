@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <string.h>
 #include <vx_intrinsics.h>
 #include "aes256.h"
 #include "tables.h"
@@ -11,7 +12,7 @@ static void increment_128bit(uint32_t *, uint32_t);
 static void add_round_key(uint8_t *, const uint32_t *);
 static inline uint32_t sub_word(uint32_t);
 static inline uint32_t rot_word(uint32_t);
-static inline void copy_state(uint8_t *, const uint8_t *);
+//static inline void copy_state(uint8_t *, const uint8_t *);
 #ifndef AES_NATIVE
 #ifndef AES_TABLE
 static void mix_columns(uint8_t *);
@@ -60,7 +61,8 @@ void aes256_ctr(const uint8_t *init_ctr, uint32_t start_block_idx,
                 const uint8_t *in, const uint32_t *round_keys, uint8_t *out,
                 int nblocks) {
     uint8_t ctr[4 * Nb];
-    copy_state(ctr, init_ctr);
+    //copy_state(ctr, init_ctr);
+    memcpy(ctr, init_ctr, 4 * Nb);
     increment_128bit((uint32_t *)ctr, start_block_idx);
     for (int b = 0; b < nblocks; b++) {
         aes256_cipher(NO_XOR, in + (Nb * 4 * b), ctr, out + (Nb * 4 * b), round_keys);
@@ -148,7 +150,8 @@ static void aes256_cipher(const uint8_t *xor_before, const uint8_t *xor_after,
                           const uint32_t *round_keys) {
     uint8_t state[4 * Nb];
 
-    copy_state(state, in);
+    memcpy(state, in, 4 * Nb);
+    //copy_state(state, in);
 
     // For CBC
     if (xor_before != NO_XOR) {
@@ -185,7 +188,8 @@ static void aes256_cipher(const uint8_t *xor_before, const uint8_t *xor_after,
         }
 
         add_round_key(new_state, round_keys + (Nb * round));
-        copy_state(state, new_state);
+        memcpy(state, new_state, 4 * Nb);
+        //copy_state(state, new_state);
     }
 
     sub_bytes(state);
@@ -216,7 +220,8 @@ static void aes256_cipher(const uint8_t *xor_before, const uint8_t *xor_after,
         add_round_key(state, (uint32_t *)xor_after);
     }
 
-    copy_state(out, state);
+    //copy_state(out, state);
+    memcpy(out, state, 4 * Nb);
 }
 
 // Equivalent inverse cipher from Section 5.3.5 of AES spec
@@ -224,7 +229,8 @@ static void aes256_inv_cipher(const uint8_t *xor_after, const uint8_t *in,
                               uint8_t *out, const uint32_t *round_keys) {
     uint8_t state[4 * Nb];
 
-    copy_state(state, in);
+    memcpy(state, in, 4 * Nb);
+    //copy_state(state, in);
 
     add_round_key(state, round_keys + (Nb * Nr));
 
@@ -254,7 +260,8 @@ static void aes256_inv_cipher(const uint8_t *xor_after, const uint8_t *in,
         }
 
         add_round_key(new_state, round_keys + (Nb * round));
-        copy_state(state, new_state);
+        memcpy(state, new_state, 4 * Nb);
+        //copy_state(state, new_state);
     }
 
     inv_sub_bytes(state);
@@ -287,7 +294,8 @@ static void aes256_inv_cipher(const uint8_t *xor_after, const uint8_t *in,
         add_round_key(state, (uint32_t *)xor_after);
     }
 
-    copy_state(out, state);
+    memcpy(out, state, 4 * Nb);
+    //copy_state(out, state);
 }
 
 static inline uint32_t sub_word(uint32_t word) {
@@ -331,11 +339,16 @@ static void add_round_key(uint8_t *state, const uint32_t *round_keys) {
     }
 }
 
-static inline void copy_state(uint8_t *dest, const uint8_t *src) {
-    for (int i = 0; i < 4; i++) {
-        ((uint32_t *)dest)[i] = ((uint32_t *)src)[i];
-    }
-}
+// Strangely enough, using this instead of memcpy() causes the kernel
+// to deadlock when running on the FPGA. So just use memcpy() for now
+//static inline void copy_state(uint8_t *dest, const uint8_t *src) {
+//    //for (int i = 0; i < 4; i++) {
+//        ((uint32_t *)dest)[0] = ((uint32_t *)src)[0];
+//        ((uint32_t *)dest)[1] = ((uint32_t *)src)[1];
+//        ((uint32_t *)dest)[2] = ((uint32_t *)src)[2];
+//        ((uint32_t *)dest)[3] = ((uint32_t *)src)[3];
+//    //}
+//}
 
 #ifndef AES_NATIVE
 #ifndef AES_TABLE
@@ -376,7 +389,8 @@ static void shift_rows(uint8_t *state) {
     new[1] = state[5]; new[5] = state[9]; new[9] = state[13]; new[13] = state[1];
     new[2] = state[10]; new[6] = state[14]; new[10] = state[2]; new[14] = state[6];
     new[3] = state[15]; new[7] = state[3]; new[11] = state[7]; new[15] = state[11];
-    copy_state(state, new);
+    memcpy(state, new, 4 * Nb);
+    //copy_state(state, new);
 }
 
 static void inv_shift_rows(uint8_t *state) {
@@ -385,7 +399,8 @@ static void inv_shift_rows(uint8_t *state) {
     new[1] = state[13]; new[5] = state[1]; new[9] = state[5]; new[13] = state[9];
     new[2] = state[10]; new[6] = state[14]; new[10] = state[2]; new[14] = state[6];
     new[3] = state[7]; new[7] = state[11]; new[11] = state[15]; new[15] = state[3];
-    copy_state(state, new);
+    memcpy(state, new, 4 * Nb);
+    //copy_state(state, new);
 }
 
 static void inv_mix_columns(uint8_t *state) {

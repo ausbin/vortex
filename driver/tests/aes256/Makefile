@@ -9,7 +9,8 @@ CRYPTO_OP_TYPE ?= 4
 # 16 threads * 8192 blocks/thread * 16B/block = 2MiB
 # See aes_op_type_t in common.h for the possible values for t
 OPTS ?= -n 8192 -t $(CRYPTO_OP_TYPE)
-# NATIVE, HYBRID, or SOFTWARE (although SOFTWARE is currently unused)
+# NATIVE, HYBRID, NATIVE,HYBRID, TABLE, TABLE,MONOTABLE, or SOFTWARE
+# (although SOFTWARE is currently unused)
 CRYPTO_ACCEL_MODE ?= NATIVE
 
 VX_CC  = $(RISCV_TOOLCHAIN_PATH)/bin/riscv32-unknown-elf-gcc
