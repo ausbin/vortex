@@ -1,5 +1,2 @@
-*.elf
-*.bin
-*.dump
 demo
 .depend
